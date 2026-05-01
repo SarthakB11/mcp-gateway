@@ -28,6 +28,10 @@ kubectl wait csv -n mcp-system -l operators.coreos.com/mcp-gateway.mcp-system=""
 
 If the command returns "no matching resources found", wait a few seconds and retry -- the CSV has not been created yet.
 
+> **Note:**
+> When installing MCP Gateway via OLM, Kuadrant is installed in the same namespace as MCP Gateway (e.g. `mcp-system`), rather than the default `kuadrant-system` namespace used by the Helm-based installation.  
+> This applies regardless of whether you are installing locally (e.g. via `make local-env-setup-olm`) or on a cluster.
+
 ## Next Steps
 
 Installing via OLM deploys the operator only. To deploy the MCP Gateway itself, create an `MCPGatewayExtension` resource. See [Manual Resource Creation](./isolated-gateway-deployment.md#manual-resource-creation) for details.
@@ -53,10 +57,6 @@ make local-env-setup-olm
 ```
 
 This builds the bundle and catalog images locally, loads them into the Kind cluster, deploys the Kuadrant OLM catalog, and lets OLM resolve Kuadrant as a dependency automatically.
-
-> **Note:**
-> When using `make local-env-setup-olm`, Kuadrant is installed in the same namespace as MCP Gateway (e.g. `mcp-system`), rather than the default `kuadrant-system` namespace used by the Helm-based installation.  
-> This may be relevant when inspecting resources or debugging installation issues.
 
 ## Available Make Targets
 
