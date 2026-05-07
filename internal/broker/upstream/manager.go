@@ -30,9 +30,17 @@ type ToolsAdderDeleter interface {
 	ListTools() map[string]*server.ServerTool
 }
 
+// PromptsAdderDeleter defines the interface for managing prompts on the gateway server
+type PromptsAdderDeleter interface {
+	AddPrompts(prompts ...server.ServerPrompt)
+	DeletePrompts(names ...string)
+	ListPrompts() map[string]server.ServerPrompt
+}
+
 const (
-	notificationToolsListChanged = "notifications/tools/list_changed"
-	gatewayServerID              = "kuadrant/id"
+	notificationToolsListChanged   = "notifications/tools/list_changed"
+	notificationPromptsListChanged = "notifications/prompts/list_changed"
+	gatewayServerID                = "kuadrant/id"
 )
 
 type eventType int
@@ -50,6 +58,7 @@ type ServerValidationStatus struct {
 	Message         string            `json:"message"`
 	Ready           bool              `json:"ready"`
 	TotalTools      int               `json:"totalTools"`
+	TotalPrompts    int               `json:"totalPrompts"`
 	InvalidTools    int               `json:"invalidTools"`
 	InvalidToolList []InvalidToolInfo `json:"invalidToolList,omitempty"`
 }
@@ -64,6 +73,8 @@ type MCP interface {
 	Connect(context.Context, func()) error
 	Disconnect() error
 	ListTools(context.Context, mcp.ListToolsRequest) (*mcp.ListToolsResult, error)
+	ListPrompts(context.Context, mcp.ListPromptsRequest) (*mcp.ListPromptsResult, error)
+	SupportsPromptsListChanged() bool
 	OnNotification(func(notification mcp.JSONRPCNotification))
 	OnConnectionLost(func(err error))
 	Ping(context.Context) error
@@ -83,7 +94,16 @@ type MCPManager struct {
 	tools          []mcp.Tool
 	toolsMap       map[string]*mcp.Tool
 	servedToolsMap map[string]*mcp.Tool
-	// toolsLock protects tools, serverTools
+
+	promptsServer PromptsAdderDeleter
+	// serverPrompts is an internal copy with prefixed names
+	serverPrompts []server.ServerPrompt
+	// prompts is the original set from MCP server with no prefix
+	prompts          []mcp.Prompt
+	promptsMap       map[string]*mcp.Prompt
+	servedPromptsMap map[string]*mcp.Prompt
+
+	// toolsLock protects tools, serverTools, prompts, serverPrompts
 	toolsLock sync.RWMutex
 
 	logger *slog.Logger
@@ -102,7 +122,7 @@ const DefaultTickerInterval = time.Minute * 1
 // NewUpstreamMCPManager creates a new MCPManager for managing a single upstream MCP server.
 // The addTools and removeTools callbacks are used to update the gateway's tool registry.
 // The tickerInterval controls how often the manager checks backend health (use 0 for default).
-func NewUpstreamMCPManager(upstream MCP, gatewaySever ToolsAdderDeleter, logger *slog.Logger, tickerInterval time.Duration, policy mcpv1alpha1.InvalidToolPolicy) *MCPManager {
+func NewUpstreamMCPManager(upstream MCP, gatewaySever ToolsAdderDeleter, promptsServer PromptsAdderDeleter, logger *slog.Logger, tickerInterval time.Duration, policy mcpv1alpha1.InvalidToolPolicy) *MCPManager {
 	if tickerInterval <= 0 {
 		tickerInterval = DefaultTickerInterval
 	}
@@ -110,6 +130,7 @@ func NewUpstreamMCPManager(upstream MCP, gatewaySever ToolsAdderDeleter, logger 
 	return &MCPManager{
 		MCP:               upstream,
 		gatewayServer:     gatewaySever,
+		promptsServer:     promptsServer,
 		tickerInterval:    tickerInterval,
 		ticker:            time.NewTicker(tickerInterval),
 		logger:            logger,
@@ -118,6 +139,9 @@ func NewUpstreamMCPManager(upstream MCP, gatewaySever ToolsAdderDeleter, logger 
 		toolsMap:          map[string]*mcp.Tool{},
 		servedToolsMap:    map[string]*mcp.Tool{},
 		serverTools:       []server.ServerTool{},
+		promptsMap:        map[string]*mcp.Prompt{},
+		servedPromptsMap:  map[string]*mcp.Prompt{},
+		serverPrompts:     []server.ServerPrompt{},
 	}
 }
 
@@ -154,6 +178,7 @@ func (man *MCPManager) Start(ctx context.Context) {
 func (man *MCPManager) Stop() {
 	man.stopOnce.Do(func() {
 		man.ticker.Stop()
+		man.removeAllPrompts()
 		man.removeAllTools()
 		if err := man.MCP.Disconnect(); err != nil {
 			man.logger.Error("failed to disconnect during stop", "upstream mcp server", man.MCP.ID(), "error", err)
@@ -167,7 +192,7 @@ func (man *MCPManager) registerCallbacks(ctx context.Context) func() {
 	man.logger.Debug("registering callbacks", "upstream mcp server", man.MCP.ID())
 	return func() {
 		man.MCP.OnNotification(func(notification mcp.JSONRPCNotification) {
-			if notification.Method == notificationToolsListChanged {
+			if notification.Method == notificationToolsListChanged || notification.Method == notificationPromptsListChanged {
 				man.logger.Debug("received notification", "upstream mcp server", man.MCP.ID(), "notification", notification)
 				man.manage(ctx, eventTypeNotification)
 				return
@@ -184,7 +209,8 @@ func (man *MCPManager) registerCallbacks(ctx context.Context) func() {
 // manage should be the only entry point that triggers changes to tools
 func (man *MCPManager) manage(ctx context.Context, event eventType) {
 	man.logger.Debug("managing connection", "upstream mcp server", man.MCP.ID(), "event type", event)
-	var numberOfTools = 0
+	var numberOfTools int
+	var numberOfPrompts int
 	// during connect the client will validate the protocol. So we don't have a separate validate requirement currently. If a client already exists it will be re-used.
 	man.logger.Debug("attempting to connect", "upstream mcp server", man.MCP.ID())
 	if err := man.MCP.Connect(ctx, man.registerCallbacks(ctx)); err != nil {
@@ -192,7 +218,7 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 		man.removeAllTools()
 		// we call disconnect here as we may have connected but failed to initialize
 		_ = man.MCP.Disconnect()
-		man.setStatus(err, numberOfTools, nil)
+		man.setStatus(err, numberOfTools, numberOfPrompts, nil)
 		return
 	}
 	// there may be an active client so we also ping
@@ -202,7 +228,7 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 		man.logger.Error("ping failed", "upstream mcp server", man.MCP.ID(), "error", err)
 		man.removeAllTools()
 		_ = man.MCP.Disconnect()
-		man.setStatus(err, numberOfTools, nil)
+		man.setStatus(err, numberOfTools, numberOfPrompts, nil)
 		return
 	}
 
@@ -216,7 +242,7 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 	if err != nil {
 		err = fmt.Errorf("upstream mcp failed to list tools server %s : %w", man.MCP.ID(), err)
 		man.logger.Error("failed to list tools", "upstream mcp server", man.MCP.ID(), "error", err)
-		man.setStatus(err, numberOfTools, nil)
+		man.setStatus(err, numberOfTools, numberOfPrompts, nil)
 		return
 	}
 
@@ -230,7 +256,7 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 		if man.invalidToolPolicy == mcpv1alpha1.InvalidToolPolicyRejectServer {
 			err = fmt.Errorf("upstream mcp %s rejected: %d invalid tools found", man.MCP.ID(), len(invalidTools))
 			man.removeAllTools()
-			man.setStatus(err, numberOfTools, invalidTools)
+			man.setStatus(err, numberOfTools, numberOfPrompts, invalidTools)
 			return
 		}
 		// FilterOut: use only valid tools
@@ -242,7 +268,7 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 	if err := man.findToolConflicts(toAdd); err != nil {
 		err = fmt.Errorf("upstream mcp failed to add tools to gateway %s : %w", man.MCP.ID(), err)
 		man.logger.Error("tool conflict detected", "upstream mcp server", man.MCP.ID(), "error", err)
-		man.setStatus(err, numberOfTools, invalidTools)
+		man.setStatus(err, numberOfTools, numberOfPrompts, invalidTools)
 		return
 	}
 	man.toolsLock.Lock()
@@ -273,7 +299,42 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 	man.serverTools = append(man.serverTools, toAdd...)
 	man.logger.Debug("internal tools", "upstream mcp server", man.MCP.ID(), "total", len(man.serverTools))
 	man.toolsLock.Unlock()
-	man.setStatus(nil, numberOfTools, invalidTools)
+
+	if man.promptsServer != nil {
+		currentPrompts, fetchedPrompts, promptErr := man.getPrompts(ctx)
+		if promptErr != nil {
+			man.logger.Error("failed to list prompts", "upstream mcp server", man.MCP.ID(), "error", promptErr)
+		} else {
+			numberOfPrompts = len(fetchedPrompts)
+			toAddPrompts, toRemovePrompts := man.diffPrompts(currentPrompts, fetchedPrompts)
+			if conflictErr := man.findPromptConflicts(toAddPrompts); conflictErr != nil {
+				man.logger.Error("prompt conflict detected", "upstream mcp server", man.MCP.ID(), "error", conflictErr)
+			} else {
+				man.toolsLock.Lock()
+				man.prompts = fetchedPrompts
+				man.promptsMap = make(map[string]*mcp.Prompt, len(fetchedPrompts))
+				man.servedPromptsMap = make(map[string]*mcp.Prompt, len(fetchedPrompts))
+				for i := range fetchedPrompts {
+					man.promptsMap[fetchedPrompts[i].Name] = &fetchedPrompts[i]
+					promptName := prefixedName(man.MCP.GetPrefix(), fetchedPrompts[i].Name)
+					man.servedPromptsMap[promptName] = &fetchedPrompts[i]
+				}
+				man.logger.Debug("updating gateway prompts", "upstream mcp server", man.MCP.ID(), "adding", len(toAddPrompts), "removing", len(toRemovePrompts))
+				if len(toRemovePrompts) > 0 {
+					man.promptsServer.DeletePrompts(toRemovePrompts...)
+				}
+				if len(toAddPrompts) > 0 {
+					man.promptsServer.AddPrompts(toAddPrompts...)
+				}
+				man.serverPrompts = slices.DeleteFunc(man.serverPrompts, func(prompt server.ServerPrompt) bool {
+					return slices.Contains(toRemovePrompts, prompt.Prompt.Name)
+				})
+				man.serverPrompts = append(man.serverPrompts, toAddPrompts...)
+				man.toolsLock.Unlock()
+			}
+		}
+	}
+	man.setStatus(nil, numberOfTools, numberOfPrompts, invalidTools)
 }
 
 func (man *MCPManager) shouldFetchTools(event eventType) bool {
@@ -295,7 +356,7 @@ func (man *MCPManager) GetStatus() ServerValidationStatus {
 	return man.status
 }
 
-func (man *MCPManager) setStatus(err error, toolCount int, invalidTools []InvalidToolInfo) {
+func (man *MCPManager) setStatus(err error, toolCount int, promptCount int, invalidTools []InvalidToolInfo) {
 	man.status.ID = string(man.MCP.ID())
 	man.status.LastValidated = time.Now()
 	man.status.Name = man.MCPName()
@@ -307,8 +368,9 @@ func (man *MCPManager) setStatus(err error, toolCount int, invalidTools []Invali
 		return
 	}
 	man.status.TotalTools = toolCount
+	man.status.TotalPrompts = promptCount
 	man.status.Ready = true
-	man.status.Message = fmt.Sprintf("server added successfully. Total tools added %d", len(man.serverTools))
+	man.status.Message = fmt.Sprintf("server added successfully. Total tools added %d. Total prompts added %d", len(man.serverTools), len(man.serverPrompts))
 }
 
 func (man *MCPManager) findToolConflicts(mcpTools []server.ServerTool) error {
@@ -462,4 +524,131 @@ func prefixedName(prefix, tool string) string {
 		return tool
 	}
 	return fmt.Sprintf("%s%s", prefix, tool)
+}
+
+func (man *MCPManager) promptToServerPrompt(newPrompt mcp.Prompt) server.ServerPrompt {
+	newPrompt.Name = prefixedName(man.MCP.GetPrefix(), newPrompt.Name)
+	newPrompt.Meta = mcp.NewMetaFromMap(map[string]any{
+		gatewayServerID: string(man.MCP.ID()),
+	})
+	return server.ServerPrompt{
+		Prompt: newPrompt,
+		Handler: func(_ context.Context, _ mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return &mcp.GetPromptResult{}, nil
+		},
+	}
+}
+
+func (man *MCPManager) diffPrompts(oldPrompts, newPrompts []mcp.Prompt) ([]server.ServerPrompt, []string) {
+	oldPromptMap := make(map[string]mcp.Prompt)
+	for _, p := range oldPrompts {
+		oldPromptMap[p.Name] = p
+	}
+
+	newPromptMap := make(map[string]mcp.Prompt)
+	for _, p := range newPrompts {
+		newPromptMap[p.Name] = p
+	}
+
+	addedPrompts := make([]server.ServerPrompt, 0)
+	for _, newPrompt := range newPromptMap {
+		if _, ok := oldPromptMap[newPrompt.Name]; !ok {
+			addedPrompts = append(addedPrompts, man.promptToServerPrompt(newPrompt))
+		}
+	}
+
+	removedPrompts := make([]string, 0)
+	for _, oldPrompt := range oldPromptMap {
+		if _, ok := newPromptMap[oldPrompt.Name]; !ok {
+			removedPrompts = append(removedPrompts, prefixedName(man.MCP.GetPrefix(), oldPrompt.Name))
+		}
+	}
+
+	return addedPrompts, removedPrompts
+}
+
+func (man *MCPManager) getPrompts(ctx context.Context) ([]mcp.Prompt, []mcp.Prompt, error) {
+	man.toolsLock.RLock()
+	prompts := make([]mcp.Prompt, len(man.prompts))
+	copy(prompts, man.prompts)
+	man.toolsLock.RUnlock()
+	res, err := man.MCP.ListPrompts(ctx, mcp.ListPromptsRequest{})
+	if err != nil {
+		return prompts, prompts, fmt.Errorf("failed to get prompts: %w", err)
+	}
+	return prompts, res.Prompts, nil
+}
+
+func (man *MCPManager) findPromptConflicts(mcpPrompts []server.ServerPrompt) error {
+	if man.promptsServer == nil {
+		return nil
+	}
+	gatewayServerPrompts := man.promptsServer.ListPrompts()
+	var conflictingPromptNames []string
+	for _, prompt := range mcpPrompts {
+		for existingPromptName, existingPromptInfo := range gatewayServerPrompts {
+			existingPrompt := existingPromptInfo.Prompt
+			existingPromptID, ok := existingPrompt.Meta.AdditionalFields[gatewayServerID]
+			if !ok {
+				man.logger.Error("unable to check conflict, prompt id is missing", "upstream mcp server", man.MCP.ID())
+				continue
+			}
+			promptID, is := existingPromptID.(string)
+			if !is {
+				man.logger.Error("unable to check conflict, prompt id is not a string", "upstream mcp server", man.MCP.ID(), "type", reflect.TypeOf(existingPromptID))
+				continue
+			}
+			if existingPromptName == prompt.Prompt.Name && promptID != string(man.MCP.ID()) {
+				conflictingPromptNames = append(conflictingPromptNames, prompt.Prompt.Name)
+			}
+		}
+	}
+	if len(conflictingPromptNames) > 0 {
+		return fmt.Errorf("conflicting prompts discovered. conflicting prompt names %v", conflictingPromptNames)
+	}
+	return nil
+}
+
+// GetManagedPrompts returns a copy of all prompts discovered from the upstream server.
+func (man *MCPManager) GetManagedPrompts() []mcp.Prompt {
+	man.toolsLock.RLock()
+	result := make([]mcp.Prompt, len(man.prompts))
+	copy(result, man.prompts)
+	man.toolsLock.RUnlock()
+	return result
+}
+
+// GetServedManagedPrompt returns the prompt if present that is being served by the gateway.
+func (man *MCPManager) GetServedManagedPrompt(promptName string) *mcp.Prompt {
+	man.toolsLock.RLock()
+	defer man.toolsLock.RUnlock()
+	return man.servedPromptsMap[promptName]
+}
+
+// SetPromptsForTesting sets prompts directly for testing purposes.
+func (man *MCPManager) SetPromptsForTesting(prompts []mcp.Prompt) {
+	man.toolsLock.Lock()
+	defer man.toolsLock.Unlock()
+	man.prompts = prompts
+	for i := range prompts {
+		man.promptsMap[prompts[i].Name] = &prompts[i]
+		man.servedPromptsMap[prefixedName(man.MCP.GetPrefix(), prompts[i].Name)] = &prompts[i]
+	}
+}
+
+func (man *MCPManager) removeAllPrompts() {
+	man.toolsLock.Lock()
+	defer man.toolsLock.Unlock()
+	if man.promptsServer == nil {
+		return
+	}
+	promptsToRemove := make([]string, 0, len(man.serverPrompts))
+	for _, prompt := range man.serverPrompts {
+		promptsToRemove = append(promptsToRemove, prompt.Prompt.Name)
+	}
+	man.serverPrompts = []server.ServerPrompt{}
+	man.prompts = []mcp.Prompt{}
+	man.promptsMap = map[string]*mcp.Prompt{}
+	man.servedPromptsMap = map[string]*mcp.Prompt{}
+	man.promptsServer.DeletePrompts(promptsToRemove...)
 }
