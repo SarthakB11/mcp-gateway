@@ -349,7 +349,7 @@ func TestMCPManager_setStatus(t *testing.T) {
 			manager := NewUpstreamMCPManager(mock, nil, nil, logger, 0, mcpv1alpha1.InvalidToolPolicyFilterOut)
 			manager.serverTools = make([]server.ServerTool, tc.numServerTools)
 
-			manager.setStatus(tc.err, tc.totalTools, 0, nil)
+			manager.setStatus(tc.err, tc.totalTools, 0, nil, nil)
 
 			assert.Equal(t, string(mock.id), manager.status.ID)
 			assert.Equal(t, "test-server", manager.status.Name)
