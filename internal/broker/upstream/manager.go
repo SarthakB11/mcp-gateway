@@ -305,33 +305,36 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 		if promptErr != nil {
 			man.logger.Error("failed to list prompts", "upstream mcp server", man.MCP.ID(), "error", promptErr)
 		} else {
-			numberOfPrompts = len(fetchedPrompts)
 			toAddPrompts, toRemovePrompts := man.diffPrompts(currentPrompts, fetchedPrompts)
 			if conflictErr := man.findPromptConflicts(toAddPrompts); conflictErr != nil {
+				conflictErr = fmt.Errorf("upstream mcp failed to add prompts to gateway %s : %w", man.MCP.ID(), conflictErr)
 				man.logger.Error("prompt conflict detected", "upstream mcp server", man.MCP.ID(), "error", conflictErr)
-			} else {
-				man.toolsLock.Lock()
-				man.prompts = fetchedPrompts
-				man.promptsMap = make(map[string]*mcp.Prompt, len(fetchedPrompts))
-				man.servedPromptsMap = make(map[string]*mcp.Prompt, len(fetchedPrompts))
-				for i := range fetchedPrompts {
-					man.promptsMap[fetchedPrompts[i].Name] = &fetchedPrompts[i]
-					promptName := prefixedName(man.MCP.GetPrefix(), fetchedPrompts[i].Name)
-					man.servedPromptsMap[promptName] = &fetchedPrompts[i]
-				}
-				man.logger.Debug("updating gateway prompts", "upstream mcp server", man.MCP.ID(), "adding", len(toAddPrompts), "removing", len(toRemovePrompts))
-				if len(toRemovePrompts) > 0 {
-					man.promptsServer.DeletePrompts(toRemovePrompts...)
-				}
-				if len(toAddPrompts) > 0 {
-					man.promptsServer.AddPrompts(toAddPrompts...)
-				}
-				man.serverPrompts = slices.DeleteFunc(man.serverPrompts, func(prompt server.ServerPrompt) bool {
-					return slices.Contains(toRemovePrompts, prompt.Prompt.Name)
-				})
-				man.serverPrompts = append(man.serverPrompts, toAddPrompts...)
-				man.toolsLock.Unlock()
+				man.removeAllPrompts()
+				man.setStatus(conflictErr, numberOfTools, numberOfPrompts, invalidTools)
+				return
 			}
+			numberOfPrompts = len(fetchedPrompts)
+			man.toolsLock.Lock()
+			man.prompts = fetchedPrompts
+			man.promptsMap = make(map[string]*mcp.Prompt, len(fetchedPrompts))
+			man.servedPromptsMap = make(map[string]*mcp.Prompt, len(fetchedPrompts))
+			for i := range fetchedPrompts {
+				man.promptsMap[fetchedPrompts[i].Name] = &fetchedPrompts[i]
+				promptName := prefixedName(man.MCP.GetPrefix(), fetchedPrompts[i].Name)
+				man.servedPromptsMap[promptName] = &fetchedPrompts[i]
+			}
+			man.logger.Debug("updating gateway prompts", "upstream mcp server", man.MCP.ID(), "adding", len(toAddPrompts), "removing", len(toRemovePrompts))
+			if len(toRemovePrompts) > 0 {
+				man.promptsServer.DeletePrompts(toRemovePrompts...)
+			}
+			if len(toAddPrompts) > 0 {
+				man.promptsServer.AddPrompts(toAddPrompts...)
+			}
+			man.serverPrompts = slices.DeleteFunc(man.serverPrompts, func(prompt server.ServerPrompt) bool {
+				return slices.Contains(toRemovePrompts, prompt.Prompt.Name)
+			})
+			man.serverPrompts = append(man.serverPrompts, toAddPrompts...)
+			man.toolsLock.Unlock()
 		}
 	}
 	man.setStatus(nil, numberOfTools, numberOfPrompts, invalidTools)
@@ -370,7 +373,7 @@ func (man *MCPManager) setStatus(err error, toolCount int, promptCount int, inva
 	man.status.TotalTools = toolCount
 	man.status.TotalPrompts = promptCount
 	man.status.Ready = true
-	man.status.Message = fmt.Sprintf("server added successfully. Total tools added %d. Total prompts added %d", len(man.serverTools), len(man.serverPrompts))
+	man.status.Message = fmt.Sprintf("server added successfully. Total tools added %d. Total prompts added %d", toolCount, promptCount)
 }
 
 func (man *MCPManager) findToolConflicts(mcpTools []server.ServerTool) error {
@@ -379,7 +382,10 @@ func (man *MCPManager) findToolConflicts(mcpTools []server.ServerTool) error {
 	for _, tool := range mcpTools {
 		for existingToolName, existingToolInfo := range gatewayServerTools {
 			existingTool := existingToolInfo.Tool
-			// TODO revisit as this is in the tool definition
+			if existingTool.Meta == nil || existingTool.Meta.AdditionalFields == nil {
+				man.logger.Error("unable to check conflict, tool meta is nil", "upstream mcp server", man.MCP.ID(), "tool", existingToolName)
+				continue
+			}
 			existingToolID, ok := existingTool.Meta.AdditionalFields[gatewayServerID]
 			if !ok {
 				// should never happen as we are adding every time
@@ -588,6 +594,10 @@ func (man *MCPManager) findPromptConflicts(mcpPrompts []server.ServerPrompt) err
 	for _, prompt := range mcpPrompts {
 		for existingPromptName, existingPromptInfo := range gatewayServerPrompts {
 			existingPrompt := existingPromptInfo.Prompt
+			if existingPrompt.Meta == nil || existingPrompt.Meta.AdditionalFields == nil {
+				man.logger.Error("unable to check conflict, prompt meta is nil", "upstream mcp server", man.MCP.ID(), "prompt", existingPromptName)
+				continue
+			}
 			existingPromptID, ok := existingPrompt.Meta.AdditionalFields[gatewayServerID]
 			if !ok {
 				man.logger.Error("unable to check conflict, prompt id is missing", "upstream mcp server", man.MCP.ID())

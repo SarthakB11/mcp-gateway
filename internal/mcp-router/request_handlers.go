@@ -533,7 +533,22 @@ data: {"error":{"code":-32602,"message":"Prompt not found"},"jsonrpc":"2.0"}`)
 	mcpReq.ReWritePromptName(upstreamPromptName)
 	headers.WithMCPServerName(serverInfo.Name)
 
-	exists, err := s.SessionCache.GetSession(ctx, mcpReq.GetSessionID())
+	var exists map[string]string
+	{
+		_, cacheSpan := tracer().Start(ctx, "mcp-router.session-cache.get",
+			trace.WithAttributes(
+				attribute.String("mcp.session.id", mcpReq.GetSessionID()),
+			),
+		)
+		var cacheErr error
+		exists, cacheErr = s.SessionCache.GetSession(ctx, mcpReq.GetSessionID())
+		if cacheErr != nil {
+			cacheSpan.RecordError(cacheErr)
+			cacheSpan.SetStatus(codes.Error, "session cache get failed")
+		}
+		cacheSpan.End()
+		err = cacheErr
+	}
 	if err != nil {
 		s.Logger.ErrorContext(ctx, "failed to get session from cache", "error", err)
 		span.RecordError(err)
