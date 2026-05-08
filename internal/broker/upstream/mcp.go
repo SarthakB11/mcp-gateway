@@ -184,6 +184,14 @@ func (up *MCPServer) Ping(ctx context.Context) error {
 	return up.client.Ping(ctx)
 }
 
+// SupportsPrompts checks if the upstream server declared prompt capabilities
+func (up *MCPServer) SupportsPrompts() bool {
+	if up.init == nil {
+		return false
+	}
+	return up.init.Capabilities.Prompts != nil
+}
+
 // SupportsPromptsListChanged validates the mcp server supports prompts/list_changed notifications
 func (up *MCPServer) SupportsPromptsListChanged() bool {
 	if up.init == nil {

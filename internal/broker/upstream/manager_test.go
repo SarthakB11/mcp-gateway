@@ -77,6 +77,10 @@ func (m *MockMCP) ListTools(_ context.Context, _ mcp.ListToolsRequest) (*mcp.Lis
 	return &mcp.ListToolsResult{Tools: m.tools}, nil
 }
 
+func (m *MockMCP) SupportsPrompts() bool {
+	return m.hasPromptsCap
+}
+
 func (m *MockMCP) SupportsPromptsListChanged() bool {
 	return m.hasPromptsCap
 }
@@ -1167,6 +1171,7 @@ func TestMCPManager_manage_PromptsSuccess(t *testing.T) {
 	mock.tools = []mcp.Tool{validTool("tool1")}
 	mock.prompts = []mcp.Prompt{{Name: "prompt1"}, {Name: "prompt2"}}
 	mock.hasToolsCap = false
+	mock.hasPromptsCap = true
 	gateway := newMockToolsAdderDeleter()
 	promptsGateway := newMockPromptsAdderDeleter()
 	manager := NewUpstreamMCPManager(mock, gateway, promptsGateway, logger, 0, mcpv1alpha1.InvalidToolPolicyFilterOut)

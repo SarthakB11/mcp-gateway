@@ -76,6 +76,7 @@ type MCP interface {
 	Disconnect() error
 	ListTools(context.Context, mcp.ListToolsRequest) (*mcp.ListToolsResult, error)
 	ListPrompts(context.Context, mcp.ListPromptsRequest) (*mcp.ListPromptsResult, error)
+	SupportsPrompts() bool
 	SupportsPromptsListChanged() bool
 	OnNotification(func(notification mcp.JSONRPCNotification))
 	OnConnectionLost(func(err error))
@@ -303,7 +304,7 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 	man.toolsLock.Unlock()
 
 	var invalidPrompts []InvalidPromptInfo
-	if man.promptsServer != nil {
+	if man.promptsServer != nil && man.MCP.SupportsPrompts() {
 		currentPrompts, fetchedPrompts, promptErr := man.getPrompts(ctx)
 		if promptErr != nil {
 			promptErr = fmt.Errorf("upstream mcp failed to list prompts server %s : %w", man.MCP.ID(), promptErr)
