@@ -211,8 +211,7 @@ func (m *JWTManager) GetExpiresIn(tokenValue string) (time.Time, error) {
 	return nd.Time, nil
 }
 
-// terminateTimeout bounds the cache deletion call made by Terminate so a stalled
-// backing store cannot block the upstream session manager indefinitely.
+// bounds cache deletion in Terminate so a stalled store cannot block forever
 const terminateTimeout = 5 * time.Second
 
 // Terminate part of the SessionIDManager interface. Will remove the associated sessions from cache
@@ -220,8 +219,7 @@ func (m *JWTManager) Terminate(sessionID string) (isNotAllowed bool, err error) 
 	m.logger.Info("terminate session id in jwt session manager", "session", sessionID)
 	if m.sessionDeleter != nil {
 		// TODO(craig) this method will be invoked by the MCPBroker so we can probably do the cache deletion there rather than in this manager
-		// The SessionIdManager interface does not pass a context, so derive one from
-		// Background with a deadline. Mirrors the sessionCloser fix in PR #911.
+		// background ctx with deadline; SessionIdManager interface gives us none
 		ctx, cancel := context.WithTimeout(context.Background(), terminateTimeout)
 		defer cancel()
 		if err := m.sessionDeleter.DeleteSessions(ctx, sessionID); err != nil {

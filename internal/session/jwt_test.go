@@ -394,10 +394,10 @@ func TestTerminate(t *testing.T) {
 			t.Fatalf("unexpected error constructing manager: %v", err)
 		}
 
-		done := make(chan struct{})
+		errCh := make(chan error, 1)
 		go func() {
-			defer close(done)
-			_, _ = manager.Terminate("session-id")
+			_, err := manager.Terminate("session-id")
+			errCh <- err
 		}()
 
 		select {
@@ -407,7 +407,10 @@ func TestTerminate(t *testing.T) {
 		}
 
 		select {
-		case <-done:
+		case err := <-errCh:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+			}
 		case <-time.After(terminateTimeout + 2*time.Second):
 			t.Fatalf("Terminate did not return within %v of the configured deadline", terminateTimeout)
 		}
