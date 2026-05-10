@@ -7,7 +7,9 @@ import (
 	"encoding/pem"
 	"log/slog"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
 	mcpv1alpha1 "github.com/Kuadrant/mcp-gateway/api/v1alpha1"
 	"github.com/Kuadrant/mcp-gateway/internal/broker/upstream"
@@ -605,4 +607,77 @@ func TestCombinedAuthorizedToolsAndVirtualServer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFilterTools_DataRace ensures that FilterTools (which calls findServerByName)
+// is safe to invoke concurrently with mutations to broker.mcpServers under
+// broker.mcpLock, mirroring the locking pattern used by OnConfigChange. Run
+// this with `go test -race ./internal/broker/...`.
+func TestFilterTools_DataRace(t *testing.T) {
+	serverID := config.UpstreamMCPID("mcp-test/test-server1:test1_:http://test.local/mcp")
+	mcpBroker := &mcpBrokerImpl{
+		enforceCapabilityFilter: true,
+		trustedHeadersPublicKey: testPublicKey,
+		logger:                  slog.Default(),
+		mcpServers: map[config.UpstreamMCPID]upstream.ActiveMCPServer{
+			serverID: upstream.NewActiveForTesting(createTestManager(t,
+				"mcp-test/test-server1",
+				"test1_",
+				[]mcp.Tool{{Name: "tool"}, {Name: "tool2"}},
+			)),
+		},
+	}
+
+	jwtHeader := createTestJWT(t, map[string][]string{
+		"mcp-test/test-server1": {"tool"},
+	})
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// reader: repeatedly invoke FilterTools, which calls findServerByName.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				request := &mcp.ListToolsRequest{Header: http.Header{
+					authorizedCapabilitiesHeader: {jwtHeader},
+				}}
+				result := &mcp.ListToolsResult{Tools: []mcp.Tool{
+					{Name: "test1_tool"},
+				}}
+				mcpBroker.FilterTools(context.Background(), 1, request, result)
+			}
+		}
+	}()
+
+	// writer: mirror OnConfigChange by mutating mcpServers under the write lock.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		replacement := upstream.NewActiveForTesting(createTestManager(t,
+			"mcp-test/test-server1",
+			"test1_",
+			[]mcp.Tool{{Name: "tool"}},
+		))
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				mcpBroker.mcpLock.Lock()
+				delete(mcpBroker.mcpServers, serverID)
+				mcpBroker.mcpServers[serverID] = replacement
+				mcpBroker.mcpLock.Unlock()
+			}
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }

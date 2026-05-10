@@ -135,6 +135,10 @@ func (broker *mcpBrokerImpl) parseAuthorizedCapabilitiesJWT(headerValues []strin
 }
 
 func (broker *mcpBrokerImpl) findServerByName(name string) upstream.ActiveMCPServer {
+	// Avoid race with OnConfigChange()
+	broker.mcpLock.RLock()
+	defer broker.mcpLock.RUnlock()
+
 	for _, upstream := range broker.mcpServers {
 		if upstream.MCPName() == name {
 			return upstream
@@ -155,7 +159,7 @@ func (broker *mcpBrokerImpl) filterToolsByServerMap(allowedTools map[string][]st
 		}
 		tools := upstream.GetManagedTools()
 		if tools == nil {
-			broker.logger.Debug("no tools registered for upstream server", "server", upstream.MCPName)
+			broker.logger.Debug("no tools registered for upstream server", "server", upstream.MCPName())
 			continue
 		}
 
