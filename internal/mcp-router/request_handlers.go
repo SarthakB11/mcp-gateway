@@ -732,8 +732,8 @@ func (s *ExtProcServer) initializeMCPSeverSession(ctx context.Context, mcpReq *M
 			if storeErr != nil {
 				s.Logger.ErrorContext(ctx, "failed to add remote session to cache", "error", storeErr)
 				// close the handle immediately; the timer is not yet armed so this is the only cleanup path
-				if cerr := clientHandle.Close(); cerr != nil {
-					s.Logger.DebugContext(ctx, "failed to close client connection on store error", "err", cerr)
+				if closeErr := clientHandle.Close(); closeErr != nil {
+					s.Logger.DebugContext(ctx, "failed to close client connection on store error", "err", closeErr)
 				}
 				return "", NewRouterError(500, fmt.Errorf("internal error"))
 			}
