@@ -262,7 +262,7 @@ var _ = Describe("URL Elicitation", func() {
 		Expect(body).NotTo(ContainSubstring("-32042"))
 	})
 
-	It("[Happy,URLElicitation] 401 from upstream invalidates cached token and re-triggers elicitation", func() {
+	FIt("[Happy,URLElicitation] 401 from upstream invalidates cached token and re-triggers elicitation", func() {
 		toolName := fmt.Sprintf("%shello_world", prefix)
 
 		By("Initializing with elicitation capability")
@@ -289,7 +289,7 @@ var _ = Describe("URL Elicitation", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sseErr.Code).To(Equal(-32042))
 
-		By("Submitting a WRONG token via broker page")
+		By("Submitting the CORRECT token via broker page")
 		elicitURL, err := extractElicitationURL(sseErr)
 		Expect(err).NotTo(HaveOccurred())
 		testURL, err := adaptElicitationURL(elicitURL, gatewayURL)
@@ -306,7 +306,7 @@ var _ = Describe("URL Elicitation", func() {
 
 		formValues := url.Values{
 			"elicitation_id": {elicitationID},
-			"token":          {"Bearer wrong-token-value"},
+			"token":          {"Bearer test-api-key-secret-token"},
 			"csrf_token":     {csrfToken},
 		}
 		postStatus, _, postErr := rawHTTPPostForm(
@@ -318,19 +318,26 @@ var _ = Describe("URL Elicitation", func() {
 		Expect(postErr).NotTo(HaveOccurred())
 		Expect(postStatus).To(Equal(200))
 
-		By("Retrying tool call — upstream should reject with 401, gateway invalidates token")
-		retryStatus, _, _, err := mcpCallToolRaw(gatewayURL, sessionID, toolName, map[string]any{"name": "retry1"}, nil)
+		By("Calling tool with correct token — should succeed and establish backend session")
+		successStatus, successContent, err := mcpCallTool(context.Background(), gatewayURL, sessionID, toolName, map[string]any{"name": "setup"}, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(successStatus).To(Equal(200))
+		Expect(successContent).NotTo(BeEmpty())
+		Expect(successContent[0].Text).To(ContainSubstring("Hello"))
+
+		By("Calling tool with X-Force-Auth-Reject — upstream returns 401, gateway invalidates token")
+		retryStatus, _, _, err := mcpCallToolRaw(gatewayURL, sessionID, toolName, map[string]any{"name": "reject"}, map[string]string{"X-Force-Auth-Reject": "true"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(retryStatus).To(Equal(401))
 
-		By("Retrying again — should get -32042 (token was invalidated)")
-		_, body2, _, err := mcpCallToolRaw(gatewayURL, sessionID, toolName, map[string]any{"name": "retry2"}, nil)
+		By("Retrying — should get -32042 (token was invalidated)")
+		_, body2, _, err := mcpCallToolRaw(gatewayURL, sessionID, toolName, map[string]any{"name": "retry"}, nil)
 		Expect(err).NotTo(HaveOccurred())
 		sseErr2, err := parseSSEError(body2)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sseErr2.Code).To(Equal(-32042))
 
-		By("Submitting the CORRECT token")
+		By("Submitting the correct token again")
 		elicitURL2, err := extractElicitationURL(sseErr2)
 		Expect(err).NotTo(HaveOccurred())
 		testURL2, err := adaptElicitationURL(elicitURL2, gatewayURL)

@@ -191,7 +191,7 @@
 
 ### [Happy,URLElicitation] 401 from upstream invalidates cached token and re-triggers elicitation
 
-- When a client submits an invalid token via the token page and makes a tool call, the upstream server returns 401. The gateway should delete the cached token so the next tool call triggers a fresh -32042 elicitation error. The client can then submit the correct token and retry successfully. This verifies that expired or invalid upstream credentials don't persist until gateway session expiry.
+- When a client has a valid cached token and an established backend session, and the upstream server rejects a subsequent tool call with 401 (simulated via `X-Force-Auth-Reject` header on the api-key-server), the gateway should delete the cached token and pass the 401 through. The next tool call should trigger a fresh -32042 elicitation error. The client can then re-submit the correct token and retry successfully.
 
 ### [Happy,URLElicitation] Server without tokenURLElicitation is unaffected
 

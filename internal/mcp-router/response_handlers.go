@@ -5,6 +5,8 @@ import (
 
 	extprochttp "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	eppb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // HandleResponseHeaders handles response headers for session ID reverse mapping
@@ -50,9 +52,19 @@ func (s *ExtProcServer) HandleResponseHeaders(ctx context.Context, responseHeade
 	if status == "401" && req != nil && s.ElicitationEnabled {
 		serverInfo, cfgErr := s.RoutingConfig.GetServerConfigByName(req.serverName)
 		if cfgErr == nil && serverInfo.TokenURLElicitation != nil {
-			s.Logger.InfoContext(ctx, "received 401 from upstream, invalidating cached user token", "server", req.serverName)
+			span := trace.SpanFromContext(ctx)
+			span.SetAttributes(
+				attribute.String("http.upstream_status", "401"),
+				attribute.String("upstream.server", req.serverName),
+				attribute.Bool("token_elicitation.enabled", true),
+				attribute.Bool("token_invalidation.attempted", true),
+			)
+			s.Logger.DebugContext(ctx, "received 401 from upstream, invalidating cached user token", "server", req.serverName)
 			if err := s.SessionCache.DeleteUserToken(ctx, req.GetSessionID(), req.serverName); err != nil {
+				span.SetAttributes(attribute.String("token_invalidation.error", err.Error()))
 				s.Logger.ErrorContext(ctx, "failed to delete user token", "server", req.serverName, "session", req.GetSessionID(), "error", err)
+			} else {
+				span.SetAttributes(attribute.Bool("token_invalidation.succeeded", true))
 			}
 		}
 	}
