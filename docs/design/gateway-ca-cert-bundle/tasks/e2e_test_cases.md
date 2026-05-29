@@ -21,10 +21,6 @@ tags: Happy,CACertBundle
 
 - When an MCPGatewayExtension has `caCertBundleRef` set with CA-A, and an upstream server's certificate is signed by CA-B (not in the gateway bundle), and the MCPServerRegistration does NOT have `caCertSecretRef`, the broker should fail the TLS handshake with a certificate verification error. The MCPServerRegistration should not become Ready.
 
-### [CACertBundle] No gateway bundle — per-server CA still works
-
-- When an MCPGatewayExtension does NOT have `caCertBundleRef` set, and an MCPServerRegistration has `caCertSecretRef` pointing to the correct CA, the broker should successfully connect to the upstream TLS server. This verifies backward compatibility — the existing per-server CA flow is unaffected.
-
 ### [CACertBundle] No gateway bundle, no per-server CA — public CA works
 
 - When neither `caCertBundleRef` nor `caCertSecretRef` is set, servers using publicly-trusted CAs should continue to work. Servers using private CAs should fail with certificate verification errors. This verifies no regression in default TLS behavior.
@@ -35,7 +31,7 @@ tags: Happy,CACertBundle
 
 ### [CACertBundle] CA bundle rotation updates broker trust pool
 
-- When the CA bundle Secret is updated with a new CA certificate (e.g. after CA rotation), the controller should detect the change, re-validate the PEM, and write the updated `gatewayCACertPEM` into the config secret. The config change flows through `mcpConfig.Notify()`, triggering the broker to rebuild its trust pool. After the update propagates (~15-30s controller re-reconciliation), servers whose certificates are signed by the new CA should connect successfully.
+- When the CA bundle Secret is updated with a new CA certificate (e.g. after CA rotation), the controller should detect the change, re-validate the PEM, and write the updated `gatewayCACertPEM` into the config secret. The config change flows through `mcpConfig.Notify()`, triggering the broker to rebuild its trust pool. After the update propagates (~60-120s kubelet volume sync), servers whose certificates are signed by the new CA should connect successfully.
 
 ### [Happy,CACertBundle] Gateway CA bundle with existing per-server CA on same server
 

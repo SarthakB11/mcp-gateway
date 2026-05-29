@@ -21,7 +21,7 @@ When a platform engineer needs to rotate the CA certificate used by all upstream
 
 **Cover:**
 - Updating the CA bundle Secret
-- Propagation timing (~15-30s controller re-reconciliation + config watcher cycle)
+- Propagation timing (~60-120s kubelet volume sync of config Secret)
 - How to verify the new CA is active (broker logs, server status)
 - Comparison with per-server CA rotation (N updates vs 1)
 

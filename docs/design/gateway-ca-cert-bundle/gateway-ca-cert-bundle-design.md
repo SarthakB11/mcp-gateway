@@ -199,7 +199,7 @@ When the CA bundle Secret is updated:
 3. The config watcher detects the config Secret change and calls `mcpConfig.Notify()`
 4. The broker's `OnConfigChange()` observer rebuilds the base trust pool and re-registers servers
 
-End-to-end propagation: ~15-30 seconds (controller re-reconciliation + config watcher cycle). This is faster than the previous volume-mount approach since it does not depend on kubelet volume sync (60-120s).
+End-to-end propagation: ~60-120 seconds (dominated by kubelet volume sync of the config Secret to the broker pod).
 
 ## Security Considerations
 
@@ -210,14 +210,6 @@ End-to-end propagation: ~15-30 seconds (controller re-reconciliation + config wa
 - **Config Secret size** — the gateway CA bundle contributes to the 1 MiB Kubernetes Secret limit, but since it replaces N per-server copies with 1, the net size is always smaller when servers share a CA. For extreme cases, operators can partition servers across multiple gateways
 
 ## Future Considerations
-
-### ConfigMap Support
-
-The current design uses a Secret for the CA bundle. A future enhancement could support ConfigMaps, which are more natural for non-sensitive CA certificates and align with how OpenShift distributes the service-serving CA (`openshift-service-ca.crt` ConfigMap). This would require a union-type field or separate `caCertBundleConfigMapRef`.
-
-### Certificate Expiry Monitoring
-
-The broker could parse the CA certificates and emit metrics or log warnings when certificates are near expiry. This would help operators detect upcoming CA rotations before they cause outages.
 
 ### Per-Server CA Deduplication
 
