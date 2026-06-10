@@ -158,6 +158,9 @@ var _ = BeforeSuite(func() {
 		g.Expect(err).NotTo(HaveOccurred())
 	}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
 
+	// debug logging on the gateway comes from the controller's
+	// BROKER_ROUTER_LOG_LEVEL env var (set in the CI overlay), so no
+	// post-deploy patch and rollout is needed here
 	By("waiting for broker/router deployment to be ready")
 	Eventually(func(g Gomega) {
 		deployment := &appsv1.Deployment{}
@@ -165,11 +168,6 @@ var _ = BeforeSuite(func() {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(deployment.Status.ReadyReplicas).To(BeNumerically(">=", 1))
 	}, TestTimeoutLong, TestRetryInterval).Should(Succeed())
-
-	By("enabling debug logging on the gateway")
-	Expect(AddDeploymentCommandFlag(ctx, SystemNamespace, "mcp-gateway", "--log-level=-4")).To(Succeed())
-	Expect(WaitForDeploymentReady(ctx, SystemNamespace, "mcp-gateway")).To(Succeed())
-
 })
 
 var _ = AfterSuite(func() {

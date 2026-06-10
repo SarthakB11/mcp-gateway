@@ -122,6 +122,7 @@ func main() {
 	}
 
 	brokerRouterImage := goenv.GetDefault("RELATED_IMAGE_ROUTER_BROKER", controller.DefaultBrokerRouterImage)
+	brokerRouterLogLevel := goenv.GetDefault("BROKER_ROUTER_LOG_LEVEL", "")
 
 	if err = (&controller.MCPGatewayExtensionReconciler{
 		Client:                mgr.GetClient(),
@@ -130,6 +131,7 @@ func main() {
 		ConfigWriterDeleter:   &configReaderWriter,
 		MCPExtFinderValidator: mcpExtFinderValidator,
 		BrokerRouterImage:     brokerRouterImage,
+		BrokerRouterLogLevel:  brokerRouterLogLevel,
 	}).SetupWithManager(ctx, mgr); err != nil {
 		panic("unable to start manager : " + err.Error())
 	}

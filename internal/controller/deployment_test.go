@@ -85,10 +85,20 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 			modify: func(d *appsv1.Deployment) {
 				d.Spec.Template.Spec.Containers[0].Command = append(
 					d.Spec.Template.Spec.Containers[0].Command,
-					"--log-level=debug",
+					"--discovery-tools-enabled=false",
 				)
 			},
 			expected: false,
+		},
+		{
+			name: "managed log-level flag added triggers update",
+			modify: func(d *appsv1.Deployment) {
+				d.Spec.Template.Spec.Containers[0].Command = append(
+					d.Spec.Template.Spec.Containers[0].Command,
+					"--log-level=-4",
+				)
+			},
+			expected: true,
 		},
 		{
 			name: "managed flag added triggers update",
@@ -580,7 +590,7 @@ func TestMergeCommand_StripsLegacyRouterKeyFlag(t *testing.T) {
 		"--mcp-broker-public-address=0.0.0.0:8080",
 		"--mcp-gateway-public-host=example.com",
 		"--mcp-router-key=deadbeefcafebabe",
-		"--log-level=debug",
+		"--discovery-tools-enabled=false",
 	}
 	got := mergeCommand(desired, existing)
 	for _, arg := range got {
@@ -588,14 +598,70 @@ func TestMergeCommand_StripsLegacyRouterKeyFlag(t *testing.T) {
 			t.Errorf("mergeCommand should strip legacy --mcp-router-key, got %v", got)
 		}
 	}
-	foundLogLevel := false
+	foundUserFlag := false
 	for _, arg := range got {
-		if arg == "--log-level=debug" {
-			foundLogLevel = true
+		if arg == "--discovery-tools-enabled=false" {
+			foundUserFlag = true
 		}
 	}
-	if !foundLogLevel {
+	if !foundUserFlag {
 		t.Errorf("mergeCommand should preserve unrelated user flags, got %v", got)
+	}
+}
+
+// TestBuildBrokerRouterDeployment_LogLevel verifies the broker --log-level
+// flag is emitted only when the controller is configured with one
+// (BROKER_ROUTER_LOG_LEVEL env var).
+func TestBuildBrokerRouterDeployment_LogLevel(t *testing.T) {
+	tests := []struct {
+		name     string
+		logLevel string
+		want     string
+	}{
+		{
+			name:     "no log-level flag when unset",
+			logLevel: "",
+			want:     "",
+		},
+		{
+			name:     "log-level flag emitted when set",
+			logLevel: "-4",
+			want:     "--log-level=-4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &MCPGatewayExtensionReconciler{
+				BrokerRouterImage:    "test-image:v1",
+				BrokerRouterLogLevel: tt.logLevel,
+			}
+			mcpExt := &mcpv1alpha1.MCPGatewayExtension{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-ext",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPGatewayExtensionSpec{
+					TargetRef: mcpv1alpha1.MCPGatewayExtensionTargetReference{
+						Name:      "my-gateway",
+						Namespace: "gateway-system",
+					},
+				},
+			}
+
+			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080))
+			command := deployment.Spec.Template.Spec.Containers[0].Command
+
+			var got string
+			for _, arg := range command {
+				if strings.HasPrefix(arg, "--log-level=") {
+					got = arg
+				}
+			}
+			if got != tt.want {
+				t.Errorf("log-level flag = %q, want %q (command %v)", got, tt.want, command)
+			}
+		})
 	}
 }
 
@@ -1352,8 +1418,13 @@ func TestFilterManagedFlags(t *testing.T) {
 		},
 		{
 			name:    "user flags stripped",
-			command: []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=debug", "--cache-connection-string=redis://localhost"},
+			command: []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--discovery-tools-enabled=false", "--cache-connection-string=redis://localhost"},
 			want:    []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080"},
+		},
+		{
+			name:    "managed log-level flag kept",
+			command: []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=-4"},
+			want:    []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=-4"},
 		},
 		{
 			name:    "empty command",
@@ -1393,8 +1464,20 @@ func TestMergeCommand(t *testing.T) {
 		{
 			name:     "preserves user flags from existing",
 			desired:  []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080"},
-			existing: []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=debug"},
-			want:     []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=debug"},
+			existing: []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--discovery-tools-enabled=false"},
+			want:     []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--discovery-tools-enabled=false"},
+		},
+		{
+			name:     "managed log-level replaced by desired value",
+			desired:  []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=-4"},
+			existing: []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=0"},
+			want:     []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=-4"},
+		},
+		{
+			name:     "managed log-level stripped when not desired",
+			desired:  []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080"},
+			existing: []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=-4"},
+			want:     []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080"},
 		},
 		{
 			name:     "updates managed flag and preserves user flags",
@@ -1405,8 +1488,8 @@ func TestMergeCommand(t *testing.T) {
 		{
 			name:     "multiple user flags preserved",
 			desired:  []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080"},
-			existing: []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=debug", "--session-length=3600"},
-			want:     []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--log-level=debug", "--session-length=3600"},
+			existing: []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--discovery-tools-enabled=false", "--session-length=3600"},
+			want:     []string{"./mcp_gateway", "--mcp-broker-public-address=0.0.0.0:8080", "--discovery-tools-enabled=false", "--session-length=3600"},
 		},
 		{
 			name:     "existing has no flags",

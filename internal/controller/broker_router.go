@@ -49,6 +49,7 @@ var managedCommandFlags = []string{
 	"--mcp-gateway-public-host",
 	"--mcp-router-key",
 	"--enable-url-elicitation",
+	"--log-level",
 }
 
 // managedEnvVarNames are the env var names the controller owns and reconciles.
@@ -85,6 +86,9 @@ func (r *MCPGatewayExtensionReconciler) buildBrokerRouterDeployment(mcpExt *mcpv
 	command = append(command, "--mcp-gateway-public-host="+publicHost)
 	if mcpExt.Spec.URLElicitation == mcpv1alpha1.URLElicitationEnabled {
 		command = append(command, "--enable-url-elicitation")
+	}
+	if r.BrokerRouterLogLevel != "" {
+		command = append(command, "--log-level="+r.BrokerRouterLogLevel)
 	}
 
 	envVars := []corev1.EnvVar{
