@@ -20,9 +20,9 @@ ci-setup: setup-cluster-base ## Setup environment for CI e2e tests
 	"$(MAKE)" deploy-tls-test-server
 	@echo "CI setup complete (3 gateways: mcp-gateway, e2e-1, e2e-2)"
 
-# Deploy test servers for CI
+# Deploy test servers for CI (TEST_SERVER_IMAGE_SOURCE selects build vs pull)
 .PHONY: deploy-test-servers-ci
-deploy-test-servers-ci: kind-load-test-servers ## Deploy test servers for CI
+deploy-test-servers-ci: load-test-servers ## Deploy test servers for CI
 	$(KUBECTL) apply -k config/test-servers/
 	"$(MAKE)" wait-test-servers
 

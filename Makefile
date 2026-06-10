@@ -341,7 +341,7 @@ build-conformance-server: ## Build conformance server Docker image locally
 	cd tests/servers/conformance-server && $(CONTAINER_ENGINE) build $(CONTAINER_ENGINE_EXTRA_FLAGS) -t ghcr.io/kuadrant/mcp-gateway/test-conformance-server:latest .
 
 # Load test server images into Kind cluster
-kind-load-test-servers: kind build-test-servers ## Load test server images into Kind cluster
+kind-load-test-servers: kind build-test-servers ## Build test server images locally and load them into Kind
 	@echo "Loading test server images into Kind cluster..."
 	$(call load-image,ghcr.io/kuadrant/mcp-gateway/test-server1:latest)
 	$(call load-image,ghcr.io/kuadrant/mcp-gateway/test-server2:latest)
@@ -353,6 +353,38 @@ kind-load-test-servers: kind build-test-servers ## Load test server images into 
 	$(call load-image,ghcr.io/kuadrant/mcp-gateway/test-everything-server:latest)
 	$(call load-image,ghcr.io/kuadrant/mcp-gateway/test-custom-response-server:latest)
 	$(call load-image,ghcr.io/kuadrant/mcp-gateway/test-user-specific-server:latest)
+
+# Pre-built test server images published to ghcr.io by .github/workflows/test-images.yaml
+TEST_SERVER_IMAGE_REPO ?= ghcr.io/kuadrant/mcp-gateway
+TEST_SERVER_IMAGE_TAG ?= latest
+TEST_SERVER_IMAGES = test-server1 test-server2 test-server3 test-api-key-server \
+	test-broken-server test-custom-path-server test-oidc-server \
+	test-everything-server test-custom-response-server test-user-specific-server
+
+# pull pre-built images straight into containerd on the kind node, in parallel,
+# avoiding both the local rebuild and the docker save + kind load tax
+define pull-images-into-kind
+	@set -e; pids=""; \
+	for img in $(1); do \
+		ref="$(TEST_SERVER_IMAGE_REPO)/$$img:$(TEST_SERVER_IMAGE_TAG)"; \
+		echo "Pulling $$ref into Kind node..."; \
+		$(CONTAINER_ENGINE) exec $(KIND_CLUSTER_NAME)-control-plane \
+			ctr -n k8s.io images pull "$$ref" >/dev/null & \
+		pids="$$pids $$!"; \
+	done; \
+	rc=0; \
+	for pid in $$pids; do wait "$$pid" || rc=1; done; \
+	if [ "$$rc" -ne 0 ]; then echo "ERROR: failed to pull one or more test server images"; exit 1; fi
+endef
+
+.PHONY: kind-pull-test-servers
+kind-pull-test-servers: ## Pull pre-built test server images from ghcr.io into Kind
+	$(call pull-images-into-kind,$(TEST_SERVER_IMAGES))
+	@echo "Test server images pulled"
+
+.PHONY: kind-pull-tls-server
+kind-pull-tls-server: ## Pull pre-built TLS test server image from ghcr.io into Kind
+	$(call pull-images-into-kind,test-tls-server)
 
 # Load everything server image into Kind cluster
 kind-load-everything-server: kind build-everything-server ## Load everything server image into Kind cluster
@@ -373,13 +405,30 @@ build-tls-server: ## Build TLS test server Docker image locally
 
 # Load TLS test server image into Kind cluster
 .PHONY: kind-load-tls-server
-kind-load-tls-server: kind build-tls-server ## Load TLS test server image into Kind cluster
+kind-load-tls-server: kind build-tls-server ## Build TLS test server image locally and load it into Kind
 	@echo "Loading TLS test server image into Kind cluster..."
 	$(call load-image,ghcr.io/kuadrant/mcp-gateway/test-tls-server:latest)
 
+# How test server images reach the Kind cluster: "build" (default) builds them
+# locally and loads via kind load, "pull" fetches the pre-built images published
+# to ghcr.io on merges to main. CI uses pull unless the change touches
+# tests/servers/** or internal/tests/**, which are not published from PRs.
+TEST_SERVER_IMAGE_SOURCE ?= build
+
+.PHONY: load-test-servers load-tls-server
+ifeq ($(TEST_SERVER_IMAGE_SOURCE),pull)
+load-test-servers: kind-pull-test-servers
+load-tls-server: kind-pull-tls-server
+else ifeq ($(TEST_SERVER_IMAGE_SOURCE),build)
+load-test-servers: kind-load-test-servers
+load-tls-server: kind-load-tls-server
+else
+$(error TEST_SERVER_IMAGE_SOURCE must be "build" or "pull", got "$(TEST_SERVER_IMAGE_SOURCE)")
+endif
+
 # Deploy TLS test server with cert-manager CA chain
 .PHONY: deploy-tls-test-server
-deploy-tls-test-server: kind-load-tls-server cert-manager-install ## Deploy TLS test server with cert-manager certificates
+deploy-tls-test-server: load-tls-server cert-manager-install ## Deploy TLS test server with cert-manager certificates
 	@echo "Setting up cert-manager CA and issuing TLS certificate..."
 	$(KUBECTL) apply -f config/test-servers/namespace.yaml
 	$(KUBECTL) apply -f config/test-servers/tls-server-cert-manager.yaml
