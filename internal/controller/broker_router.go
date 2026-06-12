@@ -663,13 +663,19 @@ func (r *MCPGatewayExtensionReconciler) buildGatewayHTTPRoute(mcpExt *mcpv1alpha
 		},
 	}
 
+	// set Group, Kind, and Weight explicitly to match API server defaults,
+	// otherwise DeepEqual sees nil vs defaulted values on every reconcile
+	weight := int32(1)
 	backendRefs := []gatewayv1.HTTPBackendRef{
 		{
 			BackendRef: gatewayv1.BackendRef{
 				BackendObjectReference: gatewayv1.BackendObjectReference{
-					Name: gatewayv1.ObjectName(brokerRouterName),
-					Port: &port,
+					Group: ptr.To(gatewayv1.Group("")),
+					Kind:  ptr.To(gatewayv1.Kind("Service")),
+					Name:  gatewayv1.ObjectName(brokerRouterName),
+					Port:  &port,
 				},
+				Weight: &weight,
 			},
 		},
 	}
@@ -786,9 +792,12 @@ func (r *MCPGatewayExtensionReconciler) buildTokensHTTPRoute(mcpExt *mcpv1alpha1
 						{
 							BackendRef: gatewayv1.BackendRef{
 								BackendObjectReference: gatewayv1.BackendObjectReference{
-									Name: gatewayv1.ObjectName(brokerRouterName),
-									Port: &port,
+									Group: ptr.To(gatewayv1.Group("")),
+									Kind:  ptr.To(gatewayv1.Kind("Service")),
+									Name:  gatewayv1.ObjectName(brokerRouterName),
+									Port:  &port,
 								},
+								Weight: ptr.To(int32(1)),
 							},
 						},
 					},

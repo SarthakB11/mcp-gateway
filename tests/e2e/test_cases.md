@@ -284,10 +284,10 @@
 
 - When the `category` or `hint` fields on a live MCPServerRegistration are updated, the controller should re-reconcile and the broker should reflect the new metadata in subsequent `discover_tools` calls. The old category should no longer match.
 
-### [HTTPS] [Hairpin] tools/call succeeds through HTTPS gateway listener with private CA
+### [HTTPS] HTTPS gateway listener with private CA (implicit — all tests)
 
-- When the gateway has an HTTPS listener (TLS-terminating) with a private CA certificate, and the broker-router is patched with `--gateway-ca-cert` pointing to the CA cert, a tools/call should trigger a successful hairpin init through the HTTPS listener. This validates the `ServerName` fix (#1130) where Go's TLS verifier checks the cert SANs against the public hostname while the TCP connection goes to the internal service address.
-- **Runs on PR CI** — requires cert-manager and private-ca-issuer (deployed by `make ci-setup`). Skips if either is absent. Requires HTTPS NodePort (30443 → hostPort 8009) in Kind config.
+- The default MCPGatewayExtension targets the `mcp-tls` HTTPS listener with a private CA cert. The suite setup patches the broker-router with `--gateway-ca-cert` so the hairpin init succeeds through TLS. Every `tools/call` in the suite validates the `ServerName` fix (#1130) where Go's TLS verifier checks the cert SANs against the public hostname while the TCP connection goes to the internal service address.
+- **Runs on PR CI** — requires cert-manager and private-ca-issuer (deployed by `make ci-setup`). HTTPS NodePort 30443 → hostPort 8009 in Kind config.
 
 ### [HTTPS] [Happy] Test broker connects to TLS upstream with custom CA certificate
 

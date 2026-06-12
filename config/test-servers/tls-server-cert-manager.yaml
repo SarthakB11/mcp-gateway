@@ -35,18 +35,18 @@ spec:
   ca:
     secretName: private-ca-keypair
 ---
-# Gateway HTTPS listener certificate for hairpin TLS tests (#1130).
-# Issued by the same private CA so the broker-router can trust it via --gateway-ca-cert.
+# gateway HTTPS listener certificate, issued by the same private CA
+# so the broker-router can trust it via --gateway-ca-cert
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: hairpin-gateway-cert
+  name: mcp-gateway-tls-cert
   namespace: gateway-system
 spec:
-  secretName: mcp-gateway-hairpin-cert
+  secretName: mcp-gateway-tls-cert
   duration: 8760h
   dnsNames:
-    - hairpin-tls.mcp-tls.local
+    - "*.mcp-gateway.local"
   issuerRef:
     name: private-ca-issuer
     kind: ClusterIssuer
