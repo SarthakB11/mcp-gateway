@@ -8,7 +8,6 @@ import (
 	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Kuadrant/mcp-gateway/internal/config"
 	"github.com/Kuadrant/mcp-gateway/internal/session"
@@ -794,20 +793,18 @@ func TestExtProcServer_OnConfigChange_DataRace(_ *testing.T) {
 		MCPGatewayExternalHostname: "initial.gateway",
 	})
 
-	stop := make(chan struct{})
+	const iterations = 5000
+
 	var wg sync.WaitGroup
+	start := make(chan struct{})
 
 	// reader: invoke a handler that reads RoutingConfig.Load() on the hot path
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				_, _ = server.HandleRequestHeaders(context.Background(), nil)
-			}
+		<-start
+		for range iterations {
+			_, _ = server.HandleRequestHeaders(context.Background(), nil)
 		}
 	}()
 
@@ -815,19 +812,15 @@ func TestExtProcServer_OnConfigChange_DataRace(_ *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				server.OnConfigChange(context.Background(), &config.MCPServersConfig{
-					MCPGatewayExternalHostname: "replacement.gateway",
-				})
-			}
+		<-start
+		for range iterations {
+			server.OnConfigChange(context.Background(), &config.MCPServersConfig{
+				MCPGatewayExternalHostname: "replacement.gateway",
+			})
 		}
 	}()
 
-	time.Sleep(200 * time.Millisecond)
-	close(stop)
+	// release both goroutines together for deterministic concurrent exercise of Load/Store
+	close(start)
 	wg.Wait()
 }
